@@ -11,6 +11,8 @@ on:
     workflows: ["agent-implement", "agent-pr-fix"]  # Edit to match your agent workflow names
     types:
       - completed
+    branches:
+      - main
 
 permissions: read-all
 
@@ -41,7 +43,6 @@ gh-aw's firewall after an agent workflow completes and report back what that run
 ## Current Context
 
 - **Repository**: ${{ github.repository }}
-- **Triggered by**: ${{ github.event.workflow_run.name }}
 - **Run**: [#${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }})
 - **Run ID**: ${{ github.event.workflow_run.id }}
 - **Conclusion**: ${{ github.event.workflow_run.conclusion }}
@@ -131,7 +132,6 @@ Build a report using this template. Fill in `$TOTAL_COST` and the breakdown tabl
 
 | | |
 |---|---|
-| **Workflow** | ${{ github.event.workflow_run.name }} |
 | **Run** | [#${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }}) |
 | **Conclusion** | ${{ github.event.workflow_run.conclusion }} |
 | **Total cost** | $TOTAL_COST |
@@ -153,13 +153,13 @@ GitHub tool.
 
 **If no PR was found**: create an issue using the `create_issue` GitHub tool. Use this
 title format:
-`[cost-tracker] ${{ github.event.workflow_run.name }} #${{ github.event.workflow_run.run_number }}: $TOTAL_COST`
+`[cost-tracker] #${{ github.event.workflow_run.run_number }}: $TOTAL_COST`
 
 ### Step 6: High-spend alert (optional)
 
 If the total cost exceeds **$1.00**, create a second issue using the `create_issue`
 GitHub tool with title:
-`[cost-tracker] High spend alert: $TOTAL_COST for ${{ github.event.workflow_run.name }}`
+`[cost-tracker] High spend alert for run #${{ github.event.workflow_run.run_number }}: $TOTAL_COST`
 
 Include the full breakdown and a link to the run. The $1.00 threshold is a conservative
 starting point. Edit this workflow to raise or lower it to match your budget.

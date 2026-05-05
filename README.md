@@ -63,6 +63,7 @@ These workflows analyze the repository, code, and activity to produce reports, i
 - [🔍 Daily Accessibility Review](docs/daily-accessibility-review.md) - Review application accessibility by automatically running and using the application
 - [📱 Multi-Device Docs Tester](docs/daily-multi-device-docs-tester.md) - Test documentation sites across mobile, tablet, and desktop viewports for responsive layout and interaction issues
 - [🔎 Daily Adhoc QA](docs/daily-qa.md) - Perform adhoc explorative quality assurance tasks
+- [🗂️ Large File Simplifier](docs/large-file-simplifier.md) - Identify the largest source file and create a detailed refactoring plan as an issue
 
 ### Code Improvement Workflows (by making changes, producing pull requests)
 
