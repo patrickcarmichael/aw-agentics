@@ -1,27 +1,41 @@
 ---
+private: true
+emoji: "🎙️"
 name: Dictation Prompt Generator
 description: Generates optimized prompts for voice dictation and speech-to-text workflows
 on:
   workflow_dispatch:
-  schedule: weekly on sunday around 6:00
+  schedule:
+    - cron: "weekly on sunday around 6:00"  # ~6 AM UTC on Sundays (scattered)
 
 permissions:
   contents: read
   issues: read
   pull-requests: read
 
-engine: copilot
+  copilot-requests: write
+
+sandbox:
+  agent:
+    sudo: false
+
+engine:
+  id: copilot
+  copilot-sdk: true
 
 network: defaults
 
 imports:
   - shared/reporting.md
 
+  - shared/otlp.md
 tools:
+  cli-proxy: true
   edit:
   bash:
     - "*"
   github:
+    mode: gh-proxy
     toolsets: [default]
 
 safe-outputs:
@@ -33,58 +47,20 @@ safe-outputs:
     auto-merge: true
 
 timeout-minutes: 10
-
-steps:
-  - name: Compute NLP word-frequency histogram
-    run: |
-      python3 - <<'EOF'
-      import re
-      from pathlib import Path
-      from collections import Counter
-
-      # Common documentation locations to scan
-      doc_roots = [
-          "docs/src/content/docs",
-          "docs",
-          "documentation",
-          "doc",
-          "wiki",
-          "pages",
-          "content",
-          "site",
-      ]
-
-      tokens = Counter()
-      scanned = 0
-
-      for root in doc_roots:
-          p = Path(root)
-          if p.is_dir():
-              for md_file in p.rglob("*.md"):
-                  text = md_file.read_text(errors="replace")
-                  # Collect backtick-quoted technical tokens
-                  tokens.update(re.findall(r'`([^`\n]+)`', text))
-                  # Also collect hyphenated/dotted/underscored identifiers
-                  tokens.update(re.findall(r'\b([\w][\w\-\.]{2,}[\w])\b', text))
-                  scanned += 1
-
-      # Also scan root-level markdown files (README, CONTRIBUTING, etc.)
-      for md_file in Path(".").glob("*.md"):
-          text = md_file.read_text(errors="replace")
-          tokens.update(re.findall(r'`([^`\n]+)`', text))
-          tokens.update(re.findall(r'\b([\w][\w\-\.]{2,}[\w])\b', text))
-          scanned += 1
-
-      print(f"Scanned {scanned} files. Frequency histogram — top 500 project tokens:")
-      for tok, n in tokens.most_common(500):
-          if len(tok) > 2:
-              print(f"  {n:5d}  {tok}")
-      EOF
 ---
 
 # Dictation Prompt Generator
 
 Extract technical vocabulary from documentation files and create a concise dictation instruction file for fixing speech-to-text errors and improving text clarity.
+
+## Required Safe Output (Must Do)
+
+Before you finish, you **MUST** call exactly one safe-output tool:
+- Use `create_pull_request` if you made meaningful updates to `DICTATION.md`.
+- Use `noop` if no meaningful update is needed after analysis.
+- Use `report_incomplete` only if a blocker prevented completion.
+
+Do **not** end with prose-only output. A safe-output tool call is required for successful workflow completion.
 
 ## Your Mission
 
@@ -97,9 +73,32 @@ Create a concise dictation instruction file at `DICTATION.md` that:
 
 ## Task Steps
 
-### 1. Review NLP Word-Frequency Histogram
+### 1. Run NLP Word-Frequency Histogram
 
-The setup step has already run a word-frequency histogram across all documentation files and printed the results to the log. Review that output as the **primary source** for selecting the 256 glossary terms — prefer tokens with high frequency that are project-specific (not generic English words).
+Run the following Python script to compute a word-frequency histogram of code-formatted tokens across all documentation files. Use the output as the **primary source** for selecting the 256 glossary terms — prefer tokens with high frequency that are project-specific (not generic English words).
+
+```bash
+python3 - <<'EOF'
+import re
+from pathlib import Path
+from collections import Counter
+
+docs = Path("docs/src/content/docs")
+tokens = Counter()
+
+for md_file in docs.rglob("*.md"):
+    text = md_file.read_text(errors="replace")
+    # Collect backtick-quoted technical tokens
+    tokens.update(re.findall(r'`([^`\n]+)`', text))
+    # Also collect hyphenated/dotted/underscored identifiers
+    tokens.update(re.findall(r'\b([\w][\w\-\.]{2,}[\w])\b', text))
+
+print("Frequency histogram — top 500 project tokens:")
+for tok, n in tokens.most_common(500):
+    if len(tok) > 2:
+        print(f"  {n:5d}  {tok}")
+EOF
+```
 
 ### 2. Scan Documentation for Project-Specific Glossary
 
@@ -110,7 +109,7 @@ Use `search` to efficiently discover documentation covering different areas of t
 - `search("compilation CLI commands audit logs")` — CLI and developer tools
 - `search("network sandbox runtime activation triggers")` — advanced features
 
-Read each returned file path for its content, then also scan any remaining documentation files in common locations (`docs/`, `documentation/`, `doc/`, `wiki/`, `pages/`, `content/`, `site/`) to ensure broad coverage.
+Read each returned file path for its content, then also scan any remaining documentation files in `docs/src/content/docs/` to ensure broad coverage.
 
 **Focus areas for extraction:**
 - Configuration: safe-outputs, permissions, tools, cache-memory, toolset, frontmatter
@@ -154,7 +153,7 @@ Use the create-pull-request tool to submit your changes with:
 
 ## Guidelines
 
-- Scan documentation files across common locations (`docs/`, `documentation/`, `doc/`, `wiki/`, `pages/`, `content/`, `site/`, and root-level `.md` files)
+- Scan only `docs/src/content/docs/**/*.md` files
 - Extract 256 terms (240-270 acceptable)
 - Exclude tooling-specific terms (makefile, Astro, starlight)
 - Prioritize frequently used project-specific terms (use NLP histogram from Step 1)
@@ -171,3 +170,5 @@ Use the create-pull-request tool to submit your changes with:
 - ✅ Focuses on fixing speech-to-text errors
 - ✅ Includes instructions for removing filler words and improving text clarity
 - ✅ Pull request created with changes
+
+{{#runtime-import shared/noop-reminder.md}}

@@ -1,57 +1,99 @@
 ---
+private: true
+emoji: "📝"
 name: Glossary Maintainer
 description: Maintains and updates the documentation glossary based on codebase changes
 on:
-  schedule: daily on weekdays
+  schedule:
+    # ~10 AM UTC weekdays (scattered to avoid thundering herd)
+    - cron: "daily around 10:00 on weekdays"
   workflow_dispatch:
-  permissions:
-    pull-requests: read
-  steps:
-    - id: check
-      run: |
-        MAX_OPEN_PRS=8
-        if [[ "$GITHUB_EVENT_NAME" != "schedule" ]]; then exit 0; fi
-        COUNT=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search 'in:title "[docs]"' --json number --jq 'length' 2>/dev/null || echo 0)
-        [[ "$COUNT" -lt "$MAX_OPEN_PRS" ]]
-      # exits 0 if not scheduled or <MAX_OPEN_PRS open PRs, 1 if ≥MAX_OPEN_PRS
-
-if: needs.pre_activation.outputs.check_result == 'success'
 
 permissions:
   contents: read
-  issues: read
   pull-requests: read
   actions: read
 
+engine:
+  id: copilot
+  agent: technical-doc-writer
+
 network:
   allowed:
-    - node
-    - python
+    - defaults
     - github
+    - node
 
+imports:
+  - ../skills/documentation/SKILL.md
+  - ../agents/technical-doc-writer.agent.md
+  - shared/mcp/serena-go.md
+
+  - shared/otlp.md
 safe-outputs:
   create-pull-request:
     expires: 2d
     title-prefix: "[docs] "
     labels: [documentation, glossary]
     draft: false
-    protected-files: fallback-to-issue
-  noop:
 
 tools:
+  cli-proxy: true
   cache-memory: true
+  repo-memory:
+    wiki: true
+    description: "Project glossary and terminology reference"
   github:
-    toolsets: [default]
+    mode: gh-proxy
+    toolsets: [repos, pull_requests]  # scoped to avoid search_repositories (in default); repos covers commits/files, pull_requests covers PRs
   edit:
   bash: true
 
 timeout-minutes: 20
 
+checkout:
+  fetch-depth: 0  # full history required so git log --since works across all commits
+
+steps:
+  - name: Fetch recent changes
+    run: |
+      set -euo pipefail
+      mkdir -p /tmp/gh-aw/agent
+
+      # Determine scan scope: Monday = full weekly scan, other weekdays = daily
+      DAY=$(date +%u)
+      if [ "$DAY" -eq 1 ]; then
+        SINCE="7 days ago"
+        SCOPE="weekly"
+      else
+        SINCE="24 hours ago"
+        SCOPE="daily"
+      fi
+
+      echo "Scan scope: $SCOPE (since: $SINCE)"
+
+      # Fetch recent commits (all files) — includes file names for context
+      git log --since="$SINCE" --oneline --name-only \
+        > /tmp/gh-aw/agent/recent-commits.txt
+
+      # Fetch commits that touched docs
+      git log --since="$SINCE" --name-only \
+        --format="%H %s" -- 'docs/**/*.md' 'docs/**/*.mdx' \
+        > /tmp/gh-aw/agent/doc-changes.txt
+
+      echo "Recent commits: $(wc -l < /tmp/gh-aw/agent/recent-commits.txt)"
+      echo "Doc file changes: $(wc -l < /tmp/gh-aw/agent/doc-changes.txt)"
+      echo "$SCOPE" > /tmp/gh-aw/agent/scan-scope.txt
+
+
+sandbox:
+  agent:
+    sudo: false
 ---
 
 # Glossary Maintainer
 
-You are an AI documentation agent that maintains the project glossary or terminology reference documentation.
+You are an AI documentation agent that maintains the project glossary at `docs/src/content/docs/reference/glossary.md`.
 
 ## Your Mission
 
@@ -61,42 +103,55 @@ Keep the glossary up-to-date by:
 3. Performing comprehensive full scan on Mondays (last 7 days)
 4. Adding new terms and updating definitions based on repository changes
 
+## Available Tools
+
+### `search`
+
+Use the `search` tool to find relevant documentation with natural language queries — it queries the repository's documentation files using text search.
+
+**Always use `search` first** when you need to find, verify, or search documentation:
+- Before writing new glossary entries — check whether documentation already exists for the term
+- Before using `find` or `bash` to list files — use `search` to discover the most relevant docs
+- When identifying relevant files — use it to narrow down which pages cover a feature or concept
+- When understanding a term — query to find authoritative documentation describing it
+
+Example: `search("safe-outputs create-pull-request options")`
+
+Always read the returned file paths to get full content — `search` returns paths, not content.
+
+### Serena MCP server
+
+You have access to the **Serena MCP server** for advanced semantic analysis and code understanding. Serena is configured with:
+- **Active workspace**: ${{ github.workspace }}
+- **Memory location**: `/tmp/gh-aw/cache-memory/serena/`
+
+Use Serena to:
+- Analyze code semantics to understand new terminology in context
+- Identify technical concepts and their relationships
+- Help generate clear, accurate definitions for technical terms
+- Understand how terms are used across the codebase
+
 ## Task Steps
 
-### 1. Locate the Glossary File
+**Turn limit**: If you have completed more than 55 turns without successfully calling `create-pull-request` or `noop`, stop immediately. Call `noop` with a brief status note describing how far you got. Do not continue processing.
 
-First, find the glossary file in the repository. Common locations include:
-- `docs/glossary.md`
-- `docs/reference/glossary.md`
-- `GLOSSARY.md`
-- `docs/terminology.md`
-- Look for files with "glossary", "terminology", or "definitions" in the name
+### 1. Determine Scan Scope
 
-Use bash to search:
+The pre-step has already determined the scan scope. Read all context files in one step (the glossary is read here early for efficiency, so Step 4 can work with already-loaded content):
 
-````bash
-find . -iname "*glossary*" -o -iname "*terminology*" -o -iname "*definitions*" | grep -v node_modules | grep -v .git
-````
+```bash
+cat /tmp/gh-aw/agent/scan-scope.txt \
+    /tmp/gh-aw/agent/recent-commits.txt \
+    /tmp/gh-aw/agent/doc-changes.txt \
+    docs/src/content/docs/reference/glossary.md
+```
 
-If no glossary file exists, check if the project would benefit from one by examining the documentation structure. If so, you may create a new glossary file.
+- **`weekly`** (Monday): Full scan — review changes from the last 7 days
+- **`daily`** (other weekdays): Incremental scan — review changes from the last 24 hours
 
-### 2. Determine Scan Scope
+Do not run additional `git log` commands to re-fetch this data; the files above are already populated.
 
-Check what day it is:
-- **Monday**: Full scan (review changes from last 7 days)
-- **Other weekdays**: Incremental scan (review changes from last 24 hours)
-
-Use bash commands to check recent activity:
-
-````bash
-# For incremental (daily) scan
-git log --since='24 hours ago' --oneline
-
-# For full (weekly) scan on Monday
-git log --since='7 days ago' --oneline
-````
-
-### 3. Load Cache Memory
+### 2. Load Cache Memory
 
 You have access to cache-memory to track:
 - Previously processed commits
@@ -107,39 +162,48 @@ Check your cache to avoid duplicate work:
 - Load the list of processed commit SHAs
 - Skip commits you've already analyzed
 
-### 4. Scan Recent Changes
+### 3. Scan Recent Changes
 
-Based on the scope (daily or weekly):
+Use the `discover-terms` sub-agent to identify new technical terms from the pre-fetched files. Invoke it by name and pass these file paths as context:
+- `/tmp/gh-aw/agent/scan-scope.txt`
+- `/tmp/gh-aw/agent/recent-commits.txt`
+- `/tmp/gh-aw/agent/doc-changes.txt`
 
-**Use GitHub tools to:**
-- List recent commits using `list_commits` for the appropriate timeframe
-- Get detailed commit information using `get_commit` for commits that might introduce new terminology
-- Search for merged pull requests using `search_pull_requests`
-- Review PR descriptions and comments for new terminology
+The sub-agent returns a JSON array of candidate terms with context and source references. Collect this list for use in Steps 4–7.
 
-**Look for:**
-- New configuration options or settings
-- New command names or API endpoints
-- New tool names or dependencies
-- New concepts or features
-- Technical acronyms that need explanation
-- Specialized terminology unique to this project
-- Terms that appear multiple times in recent changes
+### 4. Review Current Glossary
 
-### 5. Review Current Glossary
+The current glossary was already read in Step 1 along with the scope files.
 
-If a glossary exists, read it to understand the current structure:
-
-````bash
-cat [path-to-glossary-file]
-````
+**For each candidate term, use `search` as described in Available Tools above** to find documentation that describes it — this provides authoritative context for writing accurate definitions. Read the returned file paths for full context before writing definitions.
 
 **Check for:**
 - Terms that are missing from the glossary
 - Terms that need updated definitions
 - Outdated terminology
 - Inconsistent definitions
-- The organizational structure (alphabetical, by category, etc.)
+
+### 5. Follow Documentation Guidelines
+
+**IMPORTANT**: Read the documentation instructions before making changes:
+
+```bash
+cat .github/instructions/documentation.instructions.md
+```
+
+The glossary is a **Reference** document (information-oriented) and must:
+- Provide accurate, complete technical descriptions
+- Use consistent format across all entries
+- Focus on technical accuracy
+- Use descriptive mood: "X is...", "Y provides..."
+- Avoid instructions or opinions
+- Be organized alphabetically within sections
+
+**Glossary Structure:**
+- Organized by category (Core Concepts, Tools and Integration, Security and Outputs, etc.)
+- Each term has a clear, concise definition
+- Examples provided where helpful
+- Links to related documentation
 
 ### 6. Identify New Terms
 
@@ -152,37 +216,49 @@ Based on your scan of recent changes, create a list of:
 **Criteria for inclusion:**
 - The term is used in user-facing documentation or code
 - The term requires explanation (not self-evident)
-- The term is specific to this project or domain
+- The term is specific to GitHub Agentic Workflows
 - The term is likely to confuse users without a definition
+- The term is used somewhere in `docs/**/*.{md,mdx}` files
 
 **Do NOT add:**
 - Generic programming terms (unless used in a specific way)
 - Self-evident terms
 - Internal implementation details
 - Terms only used in code comments
+- Terms not used in documentation
 
 ### 7. Update the Glossary
 
 For each term identified:
 
-1. **Determine the correct location** in the glossary:
-   - Follow the existing organizational structure
-   - If alphabetical, place in alphabetical order
-   - If categorized, choose the appropriate category
+1. **Determine the correct section** based on term type:
+   - Core Concepts: workflow, agent, frontmatter, etc.
+   - Tools and Integration: MCP, tools, servers
+   - Security and Outputs: safe-outputs, permissions, staged mode
+   - Workflow Components: engine, triggers, network permissions
+   - Development and Compilation: compilation, CLI, validation
+   - Advanced Features: cache-memory, command triggers, etc.
 
 2. **Write the definition** following these guidelines:
    - Start with what the term is (not what it does)
    - Use clear, concise language
    - Include context if needed
    - Add a simple example if helpful
-   - Link to related documentation if available
+   - Link to related terms or documentation
 
-3. **Maintain consistency** with existing entries:
-   - Follow the same formatting pattern
-   - Use similar tone and style
-   - Keep definitions at a similar level of detail
+3. **Maintain alphabetical order** within each section
 
-4. **Use the edit tool** to update the glossary file
+4. **Use consistent formatting**:
+   ```markdown
+   ### Term Name
+   Definition of the term. Additional explanation if needed. Example:
+   
+   \`\`\`yaml
+   # Example code
+   \`\`\`
+   ```
+
+5. **Update the file** using the edit tool
 
 ### 8. Save Cache State
 
@@ -194,59 +270,28 @@ Update your cache-memory with:
 
 This prevents duplicate work and helps track progress.
 
-### 9. Create Pull Request or Report
+### 9. Create Pull Request
 
-If you made any changes to the glossary:
-
-**Use safe-outputs create-pull-request** to create a PR with:
-
-**PR Title Format**: 
-- Daily: `[docs] Update glossary - daily scan`
-- Weekly: `[docs] Update glossary - weekly full scan`
-
-**PR Description Template**:
-````markdown
-### Glossary Updates
-
-**Scan Type**: [Incremental (daily) / Full scan (weekly)]
-
-**Terms Added**:
-- **Term Name**: Brief explanation of why it was added
-
-**Terms Updated**:
-- **Term Name**: What changed and why
-
-**Changes Analyzed**:
-- Reviewed X commits from [timeframe]
-- Analyzed Y merged PRs
-- Processed Z new features
-
-**Related Changes**:
-- Commit SHA: Brief description
-- PR #NUMBER: Brief description
-````
-
-**If no new terms are identified**, use the `noop` safe output with a message like:
-- "All terminology is current - no new terms identified in recent changes"
-- "Glossary is up-to-date after reviewing [X] commits"
+If you made any changes to the glossary, use **safe-outputs create-pull-request** with:
+- **Title**: `[docs] Update glossary - daily scan` or `[docs] Update glossary - weekly full scan`
+- **Description**: scan type (daily/weekly), terms added, terms updated, and relevant commits or PRs
 
 ### 10. Handle Edge Cases
 
-- **No glossary file exists**: Consider if the project would benefit from a glossary. If yes, create one with initial terms. If no, use `noop` to report that no glossary exists.
-- **No new terms**: Exit gracefully using `noop`
-- **Unclear terms**: Add them with a note that they may need review
-- **Conflicting definitions**: Note both meanings if a term has multiple uses
+- **No new terms**: If no new terms are identified, exit gracefully without creating a PR
+- **Already up-to-date**: If all terms are already in the glossary, exit gracefully
+- **Unclear terms**: If a term is ambiguous, add it with a note that it needs review
+- **Conflicting definitions**: If a term has multiple meanings, note both in the definition
 
-## Guidelines
+## Constraints
 
-- **Be Selective**: Only add terms that genuinely need explanation
-- **Be Accurate**: Ensure definitions match actual implementation and usage
-- **Be Consistent**: Follow existing glossary style and structure
-- **Be Complete**: Don't leave terms partially defined
-- **Be Clear**: Write for users who are learning, not experts
-- **Follow Structure**: Maintain the existing organizational pattern
-- **Use Cache**: Track your work to avoid duplicates
-- **Link Appropriately**: Add references to related documentation where helpful
+To keep this workflow efficient, adhere to these hard limits:
+
+- **Do not use `search_repositories`** — it searches GitHub globally and is irrelevant to this task
+- **Do not read issues** — terminology should come from commits, PRs, and documentation files, not issue discussions
+- **Analyze at most 20 commits** — use the pre-fetched `recent-commits.txt` file and pick the most relevant ones
+- **Read at most 10 pull requests** — focus on PRs that clearly introduce new features or terminology
+- **The only repository that matters is the current one** — do not query or search other repositories
 
 ## Important Notes
 
@@ -255,7 +300,24 @@ If you made any changes to the glossary:
 - You have bash commands to explore the repository
 - You have cache-memory to track your progress
 - The safe-outputs create-pull-request will create a PR automatically
+- Always read documentation instructions before making changes
 - Focus on user-facing terminology and concepts
-- Review recent changes to understand what's actively being developed
 
-Your work helps users understand project-specific terminology and concepts, making documentation more accessible and consistent.
+Good luck! Your work helps users understand GitHub Agentic Workflows terminology.
+
+{{#runtime-import shared/noop-reminder.md}}
+
+## agent: `discover-terms`
+---
+model: claude-haiku-4.5
+description: Scans recent commits and doc changes to identify new technical terms
+---
+Read the provided commit log and doc-change files. Fetch diffs for at most 20 commits using get_commit. For each commit, identify new technical terms introduced in user-facing docs (docs/**/*.md, docs/**/*.mdx). Look for:
+- New configuration fields in frontmatter (YAML keys)
+- New CLI commands or flags
+- New tool names or MCP servers
+- New concepts or features
+- Technical acronyms (MCP, CLI, YAML, etc.)
+- Specialized terminology (safe-outputs, frontmatter, engine, etc.)
+
+Only include terms from `docs/**/*.{md,mdx}` files, not internal code or comments. Return a JSON array: [{"term": "...", "context": "...", "source": "commit:<SHA> or pr:<N>"}]. If no new terms, return [].

@@ -1,6 +1,7 @@
 ---
+private: true
+emoji: "🤖"
 timeout-minutes: 5
-
 on:
   roles: all
   issues:
@@ -12,24 +13,37 @@ on:
   pull_request:
     types: [opened]
     forks: "*"
+  skip-author-associations:
+    issue_comment: [owner, member, collaborator]
+    pull_request: [owner, member, collaborator]
+    issues: [owner, member, collaborator]
   skip-roles: [admin, maintainer, write, triage]
-  skip-bots: [github-actions, copilot, dependabot]
-
-# # This workflow runs often, so you can use a small model to keep costs down.
-# engine:
-#   model: small
-
+  skip-bots: [github-actions, copilot, dependabot, renovate, github-copilot-enterprise, copilot-swe-agent]
+max-daily-ai-credits: 10000
+user-rate-limit:
+  max-runs-per-window: 5
+  window: 60
 concurrency:
-  group: "gh-aw-ai-moderator-${{ github.event.issue.number || github.event.pull_request.number }}"
+  group: "gh-aw-${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number }}"
   cancel-in-progress: false
-
+engine: codex
+network:
+  allowed:
+    - defaults
+    - github
+imports:
+  - shared/otlp.md
 tools:
+  cli-proxy: true
+  cache-memory:
+    key: spam-tracking-${{ github.repository_owner }}
+    retention-days: 1
+    allowed-extensions: [".json"]
   github:
     mode: local
     read-only: true
-    min-integrity: none # This workflow is allowed to examine and comment on any issues
     toolsets: [default]
-
+    min-integrity: none
 permissions:
   contents: read
   issues: read
@@ -42,6 +56,12 @@ safe-outputs:
     max: 5
     allowed-reasons: [spam]
   threat-detection: false
+checkout: false
+features:
+  gh-aw-detection: true
+sandbox:
+  agent:
+    sudo: false
 ---
 
 # AI Moderator
@@ -57,6 +77,21 @@ You are an AI-powered moderation system that automatically detects spam, link sp
 ## Detection Tasks
 
 Perform the following detection analyses on the content:
+
+### 0. Probe Detection (Check First)
+
+Before any other analysis, check if the issue or comment appears to be a **probe** — an empty or minimal test submission with no real content or intent:
+
+- Issue title is a default/generic value (e.g., "New issue", "Test", "test issue", "hello", "hi", untitled)
+- Issue body is empty, blank, or contains only whitespace
+- Issue body is extremely short (fewer than 10 meaningful characters) and unrelated to the repository
+- Issue body is a single word or placeholder (e.g., "test", "testing", "asdf", "hello")
+- No description, context, or actionable content provided whatsoever
+
+If any probe indicators are detected:
+- **Immediately classify as spam** — label with `spam`
+- Do NOT proceed with other detection tasks
+- These are reconnaissance attempts to test system boundaries, not genuine contributions
 
 ### 1. Generic Spam Detection
 
@@ -83,7 +118,7 @@ Analyze for link spam indicators:
 ### 3. AI-Generated Content Detection
 
 Analyze for AI-generated content indicators:
-- Use of em-dashes ( - ) in casual contexts
+- Use of em-dashes (—) in casual contexts
 - Excessive use of emoji, especially in technical discussions
 - Perfect grammar and punctuation in informal settings
 - Constructions like "it's not X - it's Y" or "X isn't just Y - it's Z"
@@ -130,6 +165,47 @@ Based on your analysis:
      - Use the `add-labels` safe output to add appropriate labels (`spam`, `link-spam`, `ai-generated`)
    - **If no warnings or issues are found** and the PR appears legitimate, use the `add-labels` safe output to add the `ai-inspected` label
 
+## Spam Tracking (Cache Memory)
+
+Use the cache memory at `/tmp/gh-aw/cache-memory/` to track spam activity across runs and detect bursts of suspicious behavior from the same user.
+
+### Reading the Spam Log
+
+At the start of your analysis, try to read the spam log file at `/tmp/gh-aw/cache-memory/spam-log.json`. This file may not exist (it is absent on the first run or whenever the 24-hour cache has expired) — if it is missing, proceed with an empty array and **do not** call `missing_data`. The file contains an array of spam events:
+
+```json
+[
+  {
+    "timestamp": "2026-02-24T12:00:00Z",
+    "actor": "username",
+    "issue_number": 123,
+    "labels": ["spam"],
+    "reason": "probe: empty body"
+  }
+]
+```
+
+Filter out entries older than 24 hours before using the data.
+
+### Burst Detection
+
+After filtering, check if the current actor (`${{ github.actor }}`) has **2 or more spam incidents in the last 24 hours**. If so, treat this as a **burst** and increase your confidence that the current submission is also spam — even if it is not an obvious probe.
+
+### Updating the Spam Log
+
+After completing your analysis, if any spam labels were applied:
+1. Read the existing spam log (or start with an empty array if the file does not exist)
+2. Remove entries older than 24 hours
+3. Append a new entry for the current event with:
+   - `timestamp`: current UTC time in ISO 8601 format (e.g., `2026-02-24T12:00:00Z`)
+   - `actor`: `${{ github.actor }}`
+   - `issue_number`: `${{ github.event.issue.number || github.event.pull_request.number }}`
+   - `labels`: the labels that were applied
+   - `reason`: a short description of why it was flagged
+4. Write the updated array back to `/tmp/gh-aw/cache-memory/spam-log.json`
+
+If no spam was detected, you may still update the log to remove stale entries, but do not add a new entry.
+
 ## Important Guidelines
 
 - Be conservative with detections to avoid false positives
@@ -138,3 +214,11 @@ Based on your analysis:
 - New contributors may have less polished writing - this doesn't necessarily indicate AI generation
 - Provide clear reasoning for each detection in your analysis
 - Only take action if you have high confidence in the detection
+
+## Report Formatting
+
+- Use h3 (###) or lower for all headers in your analysis output to maintain proper document hierarchy.
+- Wrap long sections in `<details><summary>Section Name</summary>` tags to improve readability and reduce scrolling.
+- Structure: Brief summary (always visible) → Key findings (always visible) → Detailed analysis (in `<details>`) → Actions taken (always visible)
+
+{{#runtime-import shared/noop-reminder.md}}

@@ -1,7 +1,7 @@
 ---
 emoji: "👾"
 name: Issue Monster
-description: The Cookie Monster of issues - assigns issues labeled 'cookie' to the Copilot coding agent every 30 minutes
+description: The Cookie Monster of issues - assigns issues to Copilot coding agent one at a time
 on:
   workflow_dispatch:
   schedule: every 30m
@@ -9,6 +9,13 @@ on:
     query: "is:pr is:open is:draft author:app/copilot-swe-agent"
     max: 5
   skip-if-no-match: "is:issue is:open"
+  skip-if-check-failing:
+    include:
+      - build
+      - test
+      - lint-go
+      - lint-js
+    allow-pending: true
   permissions:
     issues: read
     pull-requests: read
@@ -382,12 +389,26 @@ on:
             core.setOutput('has_issues', 'false');
           }
 
+
 permissions:
   contents: read
   issues: read
   pull-requests: read
   copilot-requests: write
 
+sandbox:
+  agent:
+    sudo: false
+
+engine:
+  id: pi
+  model: copilot/gpt-5.4
+
+imports:
+  - shared/github-guard-policy.md
+  - shared/activation-app.md
+
+  - shared/otlp.md
 timeout-minutes: 30
 
 tools:
@@ -432,7 +453,7 @@ You are the **Issue Monster** - the Cookie Monster of issues! You love eating (r
 
 ## Your Mission
 
-Find up to three issues that need work and assign them to the Copilot coding agent for resolution. You work methodically, processing up to three separate issues at a time every 30 minutes, ensuring they are completely different in topic to avoid conflicts.
+Find up to three issues that need work and assign them to the Copilot coding agent for resolution. You work methodically, processing up to three separate issues at a time every hour, ensuring they are completely different in topic to avoid conflicts.
 
 ## Current Context
 
